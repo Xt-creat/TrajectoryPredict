@@ -24,7 +24,7 @@ from tqdm import tqdm
 # ]
 # all_files = us101_files + i80_files
 us101_files = [
-    'raw/us101-0805-0820.txt'
+    'data/trajectories-0750am-0805am.txt'
 ]
 all_files = us101_files
 

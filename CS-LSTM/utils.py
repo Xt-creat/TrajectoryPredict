@@ -159,7 +159,7 @@ class ngsimDataset(Dataset):
         # 初始化社会掩码批次:
         pos = [0, 0]
         mask_batch = torch.zeros(len(samples), self.grid_size[1],self.grid_size[0],self.enc_size)
-        mask_batch = mask_batch.byte()
+        mask_batch = mask_batch.bool()
 
 
         # 初始化历史、历史长度、未来、输出掩码、横向机动和纵向机动批次:
@@ -189,7 +189,7 @@ class ngsimDataset(Dataset):
                     nbrs_batch[0:len(nbr), count, 1] = torch.from_numpy(nbr[:, 1])
                     pos[0] = id % self.grid_size[0]
                     pos[1] = id // self.grid_size[0]
-                    mask_batch[sampleId,pos[1],pos[0],:] = torch.ones(self.enc_size).byte()
+                    mask_batch[sampleId,pos[1],pos[0],:] = torch.ones(self.enc_size).bool()
                     count+=1
 
         return hist_batch, nbrs_batch, mask_batch, lat_enc_batch, lon_enc_batch, fut_batch, op_mask_batch
