@@ -4,6 +4,7 @@ from model import highwayNet
 from utils import ngsimDataset,maskedNLL,maskedMSETest,maskedNLLTest
 from torch.utils.data import DataLoader
 import time
+import os
 
 
 
@@ -31,12 +32,24 @@ args['train_flag'] = False
 
 
 # Evaluation metric:
-metric = 'nll'  #or rmse
+metric = 'rmse'  #or rmse
 
 
 # Initialize network
 net = highwayNet(args)
-net.load_state_dict(torch.load('trained_models/cslstm_m.tar'))
+# 加载模型权重（支持 .pth 和 .tar 格式以兼容旧模型）
+model_path = 'trained_models/cslstm_m_best.pth'  # 优先使用最佳模型
+if not os.path.exists(model_path):
+    model_path = 'trained_models/cslstm_m_final.pth'  # 如果没有最佳模型，使用最终模型
+if not os.path.exists(model_path):
+    model_path = 'trained_models/cslstm_m.tar'  # 兼容旧格式
+checkpoint = torch.load(model_path, map_location='cpu')
+if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+    net.load_state_dict(checkpoint['model_state_dict'])
+    print(f"已加载模型 checkpoint (epoch: {checkpoint.get('epoch', 'N/A')}, val_loss: {checkpoint.get('val_loss', 'N/A'):.4f})")
+else:
+    net.load_state_dict(checkpoint)
+    print("已加载模型权重")
 if args['use_cuda']:
     net = net.cuda()
 
@@ -93,8 +106,38 @@ for i, data in enumerate(tsDataloader):
     counts += c.detach()
 
 if metric == 'nll':
-    print(lossVals / counts)
+    avg_loss_per_timestep = lossVals / counts
+    print("\n" + "="*80)
+    print("评估结果：每个时间步的平均负对数似然（NLL）损失")
+    print("="*80)
+    print(f"时间步范围: 1-25 (每个时间步 = 0.1秒, 总共2.5秒)")
+    print(f"单位: 负对数似然 (值越小表示预测越好)")
+    print("\n各时间步的NLL损失:")
+    for i, loss_val in enumerate(avg_loss_per_timestep, 1):
+        time_sec = i * 0.1
+        print(f"  时间步 {i:2d} (t={time_sec:4.1f}s): {loss_val.item():7.4f}")
+    print("\n" + "-"*80)
+    print(f"平均NLL损失 (所有时间步): {avg_loss_per_timestep.mean().item():.4f}")
+    print(f"最终时间步 (t=2.5s) NLL损失: {avg_loss_per_timestep[-1].item():.4f}")
+    print("="*80)
+    print("\n完整tensor输出:")
+    print(avg_loss_per_timestep)
 else:
-    print(torch.pow(lossVals / counts,0.5)*0.3048)   # Calculate RMSE and convert from feet to meters
+    rmse_per_timestep = torch.pow(lossVals / counts, 0.5) * 0.3048  # Calculate RMSE and convert from feet to meters
+    print("\n" + "="*80)
+    print("评估结果：每个时间步的均方根误差（RMSE）")
+    print("="*80)
+    print(f"时间步范围: 1-25 (每个时间步 = 0.1秒, 总共2.5秒)")
+    print(f"单位: 米 (值越小表示预测越好)")
+    print("\n各时间步的RMSE:")
+    for i, rmse_val in enumerate(rmse_per_timestep, 1):
+        time_sec = i * 0.1
+        print(f"  时间步 {i:2d} (t={time_sec:4.1f}s): {rmse_val.item():7.4f} 米")
+    print("\n" + "-"*80)
+    print(f"平均RMSE (所有时间步): {rmse_per_timestep.mean().item():.4f} 米")
+    print(f"最终时间步 (t=2.5s) RMSE: {rmse_per_timestep[-1].item():.4f} 米")
+    print("="*80)
+    print("\n完整tensor输出:")
+    print(rmse_per_timestep)
 
 

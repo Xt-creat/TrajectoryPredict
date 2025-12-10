@@ -5,16 +5,42 @@ from utils import ngsimDataset,maskedNLL,maskedMSE,maskedNLLTest
 from torch.utils.data import DataLoader
 import time
 import math
+import os
+import logging
+from datetime import datetime
 
+
+## 创建保存模型的目录（在日志配置之前）
+os.makedirs('trained_models', exist_ok=True)
+os.makedirs('logs', exist_ok=True)
+
+## 配置日志记录（必须在所有 logger 使用之前）
+log_filename = f"logs/training_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename, encoding='utf-8'),
+        logging.StreamHandler()  # 同时输出到控制台
+    ]
+)
+logger = logging.getLogger(__name__)
+
+logger.info("="*80)
+logger.info("开始训练 CS-LSTM 模型")
+logger.info("="*80)
+logger.info(f"模型保存目录: trained_models/")
+logger.info(f"训练日志文件: {log_filename}")
 
 ## Network Arguments
 args = {}
 # 自动检测CUDA是否可用，如果不可用则使用CPU
 args['use_cuda'] = torch.cuda.is_available()
 if args['use_cuda']:
-    print("使用GPU训练")
+    logger.info("使用GPU训练")
+    logger.info(f"GPU设备: {torch.cuda.get_device_name(0)}")
 else:
-    print("CUDA不可用，使用CPU训练（速度较慢）")
+    logger.info("CUDA不可用，使用CPU训练（速度较慢）")
 args['encoder_size'] = 64
 args['decoder_size'] = 128
 args['in_length'] = 16
@@ -57,11 +83,19 @@ train_loss = []
 val_loss = []
 prev_val_loss = math.inf
 
+## 跟踪最佳验证损失
+best_val_loss = math.inf
+
+logger.info(f"训练配置: pretrainEpochs={pretrainEpochs}, trainEpochs={trainEpochs}, batch_size={batch_size}")
+logger.info(f"网络参数: encoder_size={args['encoder_size']}, decoder_size={args['decoder_size']}")
+logger.info(f"总训练轮数: {pretrainEpochs+trainEpochs}")
+logger.info("-"*80)
+
 for epoch_num in range(pretrainEpochs+trainEpochs):
     if epoch_num == 0:
-        print('Pre-training with MSE loss')
+        logger.info('Pre-training with MSE loss')
     elif epoch_num == pretrainEpochs:
-        print('Training with NLL loss')
+        logger.info('Training with NLL loss')
 
 
     ## Train:_________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________
@@ -119,7 +153,8 @@ for epoch_num in range(pretrainEpochs+trainEpochs):
 
         if i%100 == 99:
             eta = avg_tr_time/100*(len(trSet)/batch_size-i)
-            print("Epoch no:",epoch_num+1,"| Epoch progress(%):",format(i/(len(trSet)/batch_size)*100,'0.2f'), "| Avg train loss:",format(avg_tr_loss/100,'0.4f'),"| Acc:",format(avg_lat_acc,'0.4f'),format(avg_lon_acc,'0.4f'), "| Validation loss prev epoch",format(prev_val_loss,'0.4f'), "| ETA(s):",int(eta))
+            log_msg = f"Epoch no: {epoch_num+1} | Epoch progress(%): {i/(len(trSet)/batch_size)*100:.2f} | Avg train loss: {avg_tr_loss/100:.4f} | Acc: {avg_lat_acc:.4f} {avg_lon_acc:.4f} | Validation loss prev epoch {prev_val_loss:.4f} | ETA(s): {int(eta)}"
+            logger.info(log_msg)
             train_loss.append(avg_tr_loss/100)
             avg_tr_loss = 0
             avg_lat_acc = 0
@@ -132,7 +167,7 @@ for epoch_num in range(pretrainEpochs+trainEpochs):
     ## Validate:______________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________
     net.train_flag = False
 
-    print("Epoch",epoch_num+1,'complete. Calculating validation loss...')
+    logger.info(f"Epoch {epoch_num+1} complete. Calculating validation loss...")
     avg_val_loss = 0
     avg_val_lat_acc = 0
     avg_val_lon_acc = 0
@@ -176,19 +211,59 @@ for epoch_num in range(pretrainEpochs+trainEpochs):
         avg_val_loss += l.item()
         val_batch_count += 1
 
-    print(avg_val_loss/val_batch_count)
-
     # Print validation loss and update display variables
-    print('Validation loss :',format(avg_val_loss/val_batch_count,'0.4f'),"| Val Acc:",format(avg_val_lat_acc/val_batch_count*100,'0.4f'),format(avg_val_lon_acc/val_batch_count*100,'0.4f'))
-    val_loss.append(avg_val_loss/val_batch_count)
-    prev_val_loss = avg_val_loss/val_batch_count
+    current_val_loss = avg_val_loss/val_batch_count
+    logger.info(f"Validation loss: {current_val_loss:.4f} | Val Acc: {avg_val_lat_acc/val_batch_count*100:.4f} {avg_val_lon_acc/val_batch_count*100:.4f}")
+    val_loss.append(current_val_loss)
+    prev_val_loss = current_val_loss
+
+    # 保存每个 epoch 的 checkpoint
+    checkpoint_path = f'trained_models/checkpoint_epoch_{epoch_num+1}.pth'
+    torch.save({
+        'epoch': epoch_num + 1,
+        'model_state_dict': net.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': current_val_loss,
+        'train_loss': train_loss,
+        'val_loss_history': val_loss,
+    }, checkpoint_path)
+    logger.info(f"已保存 checkpoint: {checkpoint_path}")
+
+    # 保存最佳模型（验证损失最低的）
+    if current_val_loss < best_val_loss:
+        best_val_loss = current_val_loss
+        best_model_path = 'trained_models/cslstm_m_best.pth'
+        torch.save({
+            'epoch': epoch_num + 1,
+            'model_state_dict': net.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_loss': best_val_loss,
+            'train_loss': train_loss,
+            'val_loss_history': val_loss,
+        }, best_model_path)
+        logger.info(f"✓ 新的最佳模型已保存 (val_loss: {best_val_loss:.4f}): {best_model_path}")
 
 
 
 
     #__________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________________
 
-torch.save(net.state_dict(), 'trained_models/cslstm_m.tar')
+# 训练结束后保存最终模型
+final_model_path = 'trained_models/cslstm_m_final.pth'
+torch.save({
+    'epoch': pretrainEpochs + trainEpochs,
+    'model_state_dict': net.state_dict(),
+    'optimizer_state_dict': optimizer.state_dict(),
+    'val_loss': prev_val_loss,
+    'train_loss': train_loss,
+    'val_loss_history': val_loss,
+}, final_model_path)
+logger.info("="*80)
+logger.info("训练完成！")
+logger.info(f"最终模型已保存: {final_model_path}")
+logger.info(f"最佳验证损失: {best_val_loss:.4f}")
+logger.info(f"训练日志已保存: {log_filename}")
+logger.info("="*80)
 
 
 
