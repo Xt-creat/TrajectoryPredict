@@ -11,19 +11,23 @@ from collections import defaultdict
 from tqdm import tqdm
 
 # 输入文件路径
+# us101_files = [
+#     'raw/us101-0750-0805.txt',
+#     'raw/us101-0805-0820.txt',
+#     'raw/us101-0820-0835.txt'
+# ]
+
+# i80_files = [
+#     'raw/i80-1600-1615.txt',
+#     'raw/i80-1700-1715.txt',
+#     'raw/i80-1715-1730.txt'
+# ]
+# all_files = us101_files + i80_files
 us101_files = [
-    'raw/us101-0750-0805.txt',
-    'raw/us101-0805-0820.txt',
-    'raw/us101-0820-0835.txt'
+    'raw/us101-0805-0820.txt'
 ]
+all_files = us101_files
 
-i80_files = [
-    'raw/i80-1600-1615.txt',
-    'raw/i80-1700-1715.txt',
-    'raw/i80-1715-1730.txt'
-]
-
-all_files = us101_files + i80_files
 
 # 字段说明:
 # 1: 数据集ID

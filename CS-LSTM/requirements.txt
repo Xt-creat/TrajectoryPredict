@@ -1,0 +1,23 @@
+# CS-LSTM 项目依赖
+# 基于 PyTorch 的车辆轨迹预测模型
+
+# 深度学习框架
+# 注意：原始代码基于 PyTorch 0.4.0，但已更新为兼容 PyTorch 1.8.0+
+# 代码中的 API（如 .data, .cuda() 等）在 PyTorch 2.0+ 中仍然可用
+torch>=1.8.0
+torchvision>=0.9.0
+
+# 科学计算
+numpy>=1.19.0
+scipy>=1.5.0
+pandas>=1.1.0
+
+# 数据处理和可视化
+tqdm>=4.50.0
+
+# 数据下载
+kagglehub>=0.2.0
+
+# 可选：如果需要使用MATLAB文件处理
+# 注意：scipy.io 已包含在 scipy 中
+
