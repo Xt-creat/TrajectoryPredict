@@ -102,7 +102,7 @@ def main(args):
         paths = [args.model_path]
 
     for path in paths:
-        checkpoint = torch.load(path)
+        checkpoint = torch.load(path, weights_only=False)
         generator = get_generator(checkpoint)
         _args = AttrDict(checkpoint['args'])
         path = get_dset_path(_args.dataset_name, args.dset_type)

@@ -19,6 +19,31 @@ from sgan.models import TrajectoryGenerator, TrajectoryDiscriminator
 from sgan.utils import int_tuple, bool_flag, get_total_norm
 from sgan.utils import relative_to_abs, get_dset_path
 
+
+def get_grad_norm(model):
+    """计算模型参数的梯度范数"""
+    total_norm = 0.0
+    param_count = 0
+    max_grad = 0.0
+    min_grad = float('inf')
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+            param_count += 1
+            # 检查最大和最小梯度值
+            grad_abs_max = p.grad.data.abs().max().item()
+            grad_abs_min = p.grad.data.abs().min().item()
+            max_grad = max(max_grad, grad_abs_max)
+            min_grad = min(min_grad, grad_abs_min)
+    if param_count > 0:
+        total_norm = total_norm ** (1. / 2)
+    else:
+        total_norm = 0.0
+        max_grad = 0.0
+        min_grad = 0.0
+    return total_norm, param_count, max_grad, min_grad
+
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
@@ -28,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # Dataset options
 parser.add_argument('--dataset_name', default='zara1', type=str)
-parser.add_argument('--delim', default=' ')
+parser.add_argument('--delim', default='\t')
 parser.add_argument('--loader_num_workers', default=4, type=int)
 parser.add_argument('--obs_len', default=8, type=int)
 parser.add_argument('--pred_len', default=8, type=int)
@@ -75,7 +100,7 @@ parser.add_argument('--d_steps', default=2, type=int)
 parser.add_argument('--clipping_threshold_d', default=0, type=float)
 
 # Loss Options
-parser.add_argument('--l2_loss_weight', default=0, type=float)
+parser.add_argument('--l2_loss_weight', default=0.1, type=float)
 parser.add_argument('--best_k', default=1, type=int)
 
 # Output
@@ -99,21 +124,37 @@ def init_weights(m):
         nn.init.kaiming_normal_(m.weight)
 
 
+def get_device(args):
+    """Get the device to use (cuda or cpu, skip mps)"""
+    if args.use_gpu == 1:
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+    # 不使用 MPS，直接使用 CPU
+    return torch.device('cpu')
+
 def get_dtypes(args):
+    device = get_device(args)
     long_dtype = torch.LongTensor
     float_dtype = torch.FloatTensor
-    if args.use_gpu == 1:
+    if device.type == 'cuda':
         long_dtype = torch.cuda.LongTensor
         float_dtype = torch.cuda.FloatTensor
-    return long_dtype, float_dtype
+    elif device.type == 'mps':
+        long_dtype = torch.LongTensor
+        float_dtype = torch.FloatTensor
+    return long_dtype, float_dtype, device
 
 
 def main(args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_num
+    device = get_device(args)
+    if device.type == 'cuda':
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_num
     train_path = get_dset_path(args.dataset_name, 'train')
     val_path = get_dset_path(args.dataset_name, 'val')
 
-    long_dtype, float_dtype = get_dtypes(args)
+    long_dtype, float_dtype, _ = get_dtypes(args)
+    
+    logger.info(f"Using device: {device}")
 
     logger.info("Initializing train dataset")
     train_dset, train_loader = data_loader(args, train_path)
@@ -148,7 +189,8 @@ def main(args):
         batch_norm=args.batch_norm)
 
     generator.apply(init_weights)
-    generator.type(float_dtype).train()
+    generator = generator.to(device)
+    generator.train()
     logger.info('Here is the generator:')
     logger.info(generator)
 
@@ -164,7 +206,8 @@ def main(args):
         d_type=args.d_type)
 
     discriminator.apply(init_weights)
-    discriminator.type(float_dtype).train()
+    discriminator = discriminator.to(device)
+    discriminator.train()
     logger.info('Here is the discriminator:')
     logger.info(discriminator)
 
@@ -186,7 +229,7 @@ def main(args):
 
     if restore_path is not None and os.path.isfile(restore_path):
         logger.info('Restoring from checkpoint {}'.format(restore_path))
-        checkpoint = torch.load(restore_path)
+        checkpoint = torch.load(restore_path, weights_only=False)
         generator.load_state_dict(checkpoint['g_state'])
         discriminator.load_state_dict(checkpoint['d_state'])
         optimizer_g.load_state_dict(checkpoint['g_optim_state'])
@@ -232,7 +275,8 @@ def main(args):
         logger.info('Starting epoch {}'.format(epoch))
         for batch in train_loader:
             if args.timing == 1:
-                torch.cuda.synchronize()
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
                 t1 = time.time()
 
             # Decide whether to use the batch for stepping on discriminator or
@@ -242,7 +286,7 @@ def main(args):
                 step_type = 'd'
                 losses_d = discriminator_step(args, batch, generator,
                                               discriminator, d_loss_fn,
-                                              optimizer_d)
+                                              optimizer_d, device)
                 checkpoint['norm_d'].append(
                     get_total_norm(discriminator.parameters()))
                 d_steps_left -= 1
@@ -250,14 +294,15 @@ def main(args):
                 step_type = 'g'
                 losses_g = generator_step(args, batch, generator,
                                           discriminator, g_loss_fn,
-                                          optimizer_g)
+                                          optimizer_g, device)
                 checkpoint['norm_g'].append(
                     get_total_norm(generator.parameters())
                 )
                 g_steps_left -= 1
 
             if args.timing == 1:
-                torch.cuda.synchronize()
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
                 t2 = time.time()
                 logger.info('{} step took {}'.format(step_type, t2 - t1))
 
@@ -276,10 +321,24 @@ def main(args):
             if t % args.print_every == 0:
                 logger.info('t = {} / {}'.format(t + 1, args.num_iterations))
                 for k, v in sorted(losses_d.items()):
-                    logger.info('  [D] {}: {:.3f}'.format(k, v))
+                    if 'grad' in k:
+                        if 'params' in k:
+                            logger.info('  [D] {}: {:.0f}'.format(k, v))
+                        else:
+                            logger.info('  [D] {}: {:.6e}'.format(k, v))
+                    elif 'scores' in k:
+                        logger.info('  [D] {}: {:.6f}'.format(k, v))
+                    else:
+                        logger.info('  [D] {}: {:.3f}'.format(k, v))
                     checkpoint['D_losses'][k].append(v)
                 for k, v in sorted(losses_g.items()):
-                    logger.info('  [G] {}: {:.3f}'.format(k, v))
+                    if 'grad' in k:
+                        if 'params' in k:
+                            logger.info('  [G] {}: {:.0f}'.format(k, v))
+                        else:
+                            logger.info('  [G] {}: {:.6e}'.format(k, v))
+                    else:
+                        logger.info('  [G] {}: {:.3f}'.format(k, v))
                     checkpoint['G_losses'][k].append(v)
                 checkpoint['losses_ts'].append(t)
 
@@ -292,12 +351,12 @@ def main(args):
                 # Check stats on the validation set
                 logger.info('Checking stats on val ...')
                 metrics_val = check_accuracy(
-                    args, val_loader, generator, discriminator, d_loss_fn
+                    args, val_loader, generator, discriminator, d_loss_fn, device
                 )
                 logger.info('Checking stats on train ...')
                 metrics_train = check_accuracy(
                     args, train_loader, generator, discriminator,
-                    d_loss_fn, limit=True
+                    d_loss_fn, device, limit=True
                 )
 
                 for k, v in sorted(metrics_val.items()):
@@ -360,14 +419,16 @@ def main(args):
 
 
 def discriminator_step(
-    args, batch, generator, discriminator, d_loss_fn, optimizer_d
+    args, batch, generator, discriminator, d_loss_fn, optimizer_d, device
 ):
-    batch = [tensor.cuda() for tensor in batch]
+    batch = [tensor.to(device) for tensor in batch]
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel, non_linear_ped,
      loss_mask, seq_start_end) = batch
     losses = {}
     loss = torch.zeros(1).to(pred_traj_gt)
 
+    # 训练判别器时，生成器应该处于训练模式（保持batch norm等层的行为）
+    # 但生成器的输出需要detach，因为只训练判别器
     generator_out = generator(obs_traj, obs_traj_rel, seq_start_end)
 
     pred_traj_fake_rel = generator_out
@@ -381,6 +442,14 @@ def discriminator_step(
     scores_fake = discriminator(traj_fake, traj_fake_rel, seq_start_end)
     scores_real = discriminator(traj_real, traj_real_rel, seq_start_end)
 
+    # 添加调试信息：检查判别器输出
+    losses['D_scores_real_mean'] = scores_real.mean().item()
+    losses['D_scores_real_min'] = scores_real.min().item()
+    losses['D_scores_real_max'] = scores_real.max().item()
+    losses['D_scores_fake_mean'] = scores_fake.mean().item()
+    losses['D_scores_fake_min'] = scores_fake.min().item()
+    losses['D_scores_fake_max'] = scores_fake.max().item()
+
     # Compute loss with optional gradient penalty
     data_loss = d_loss_fn(scores_real, scores_fake)
     losses['D_data_loss'] = data_loss.item()
@@ -389,6 +458,14 @@ def discriminator_step(
 
     optimizer_d.zero_grad()
     loss.backward()
+    
+    # 计算梯度范数用于调试
+    grad_norm, param_count, max_grad, min_grad = get_grad_norm(discriminator)
+    losses['D_grad_norm'] = grad_norm
+    losses['D_grad_params'] = param_count
+    losses['D_grad_max'] = max_grad
+    losses['D_grad_min'] = min_grad
+    
     if args.clipping_threshold_d > 0:
         nn.utils.clip_grad_norm_(discriminator.parameters(),
                                  args.clipping_threshold_d)
@@ -398,9 +475,9 @@ def discriminator_step(
 
 
 def generator_step(
-    args, batch, generator, discriminator, g_loss_fn, optimizer_g
+    args, batch, generator, discriminator, g_loss_fn, optimizer_g, device
 ):
-    batch = [tensor.cuda() for tensor in batch]
+    batch = [tensor.to(device) for tensor in batch]
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel, non_linear_ped,
      loss_mask, seq_start_end) = batch
     losses = {}
@@ -446,6 +523,14 @@ def generator_step(
 
     optimizer_g.zero_grad()
     loss.backward()
+    
+    # 计算梯度范数用于调试
+    grad_norm, param_count, max_grad, min_grad = get_grad_norm(generator)
+    losses['G_grad_norm'] = grad_norm
+    losses['G_grad_params'] = param_count
+    losses['G_grad_max'] = max_grad
+    losses['G_grad_min'] = min_grad
+    
     if args.clipping_threshold_g > 0:
         nn.utils.clip_grad_norm_(
             generator.parameters(), args.clipping_threshold_g
@@ -456,7 +541,7 @@ def generator_step(
 
 
 def check_accuracy(
-    args, loader, generator, discriminator, d_loss_fn, limit=False
+    args, loader, generator, discriminator, d_loss_fn, device, limit=False
 ):
     d_losses = []
     metrics = {}
@@ -468,7 +553,7 @@ def check_accuracy(
     generator.eval()
     with torch.no_grad():
         for batch in loader:
-            batch = [tensor.cuda() for tensor in batch]
+            batch = [tensor.to(device) for tensor in batch]
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
              non_linear_ped, loss_mask, seq_start_end) = batch
             linear_ped = 1 - non_linear_ped

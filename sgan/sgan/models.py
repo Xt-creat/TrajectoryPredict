@@ -3,25 +3,41 @@ import torch.nn as nn
 
 
 def make_mlp(dim_list, activation='relu', batch_norm=True, dropout=0):
+    """
+    构建多层感知机（MLP）网络
+    
+    重要修改：最后一层（输出层）不使用激活函数
+    - 原因：对于判别器，输出层需要输出原始 logits（可以是正数或负数）
+    - BCE loss 函数内部会自动应用 sigmoid，不需要在输出层手动添加激活函数
+    - 如果使用 ReLU，会导致负数输出被截断为 0，进而导致梯度为 0，判别器无法训练
+    - 这个修改解决了判别器输出全为 0、梯度消失的问题
+    """
     layers = []
-    for dim_in, dim_out in zip(dim_list[:-1], dim_list[1:]):
+    for i, (dim_in, dim_out) in enumerate(zip(dim_list[:-1], dim_list[1:])):
         layers.append(nn.Linear(dim_in, dim_out))
-        if batch_norm:
-            layers.append(nn.BatchNorm1d(dim_out))
-        if activation == 'relu':
-            layers.append(nn.ReLU())
-        elif activation == 'leakyrelu':
-            layers.append(nn.LeakyReLU())
-        if dropout > 0:
-            layers.append(nn.Dropout(p=dropout))
+        # 判断是否为最后一层（输出层）
+        is_last_layer = (i == len(dim_list) - 2)
+        if not is_last_layer:
+            # 中间层：添加 BatchNorm、激活函数和 Dropout
+            if batch_norm:
+                layers.append(nn.BatchNorm1d(dim_out))
+            if activation == 'relu':
+                layers.append(nn.ReLU())
+            elif activation == 'leakyrelu':
+                layers.append(nn.LeakyReLU())
+            if dropout > 0:
+                layers.append(nn.Dropout(p=dropout))
+        # 注意：最后一层不添加激活函数，直接输出 logits
     return nn.Sequential(*layers)
 
 
-def get_noise(shape, noise_type):
+def get_noise(shape, noise_type, device=None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if noise_type == 'gaussian':
-        return torch.randn(*shape).cuda()
+        return torch.randn(*shape, device=device)
     elif noise_type == 'uniform':
-        return torch.rand(*shape).sub_(0.5).mul_(2.0).cuda()
+        return torch.rand(*shape, device=device).sub_(0.5).mul_(2.0)
     raise ValueError('Unrecognized noise type "%s"' % noise_type)
 
 
@@ -46,9 +62,10 @@ class Encoder(nn.Module):
         self.spatial_embedding = nn.Linear(2, embedding_dim)
 
     def init_hidden(self, batch):
+        device = next(self.parameters()).device
         return (
-            torch.zeros(self.num_layers, batch, self.h_dim).cuda(),
-            torch.zeros(self.num_layers, batch, self.h_dim).cuda()
+            torch.zeros(self.num_layers, batch, self.h_dim, device=device),
+            torch.zeros(self.num_layers, batch, self.h_dim, device=device)
         )
 
     def forward(self, obs_traj):
@@ -60,8 +77,8 @@ class Encoder(nn.Module):
         """
         # Encode observed Trajectory
         batch = obs_traj.size(1)
-        obs_traj_embedding = self.spatial_embedding(obs_traj.view(-1, 2))
-        obs_traj_embedding = obs_traj_embedding.view(
+        obs_traj_embedding = self.spatial_embedding(obs_traj.reshape(-1, 2))
+        obs_traj_embedding = obs_traj_embedding.reshape(
             -1, batch, self.embedding_dim
         )
         state_tuple = self.init_hidden(batch)
@@ -422,7 +439,9 @@ class TrajectoryGenerator(nn.Module):
                 grid_size=grid_size
             )
 
-        if self.noise_dim[0] == 0:
+        if self.noise_dim is None:
+            self.noise_dim = None
+        elif self.noise_dim[0] == 0:
             self.noise_dim = None
         else:
             self.noise_first_dim = noise_dim[0]
@@ -466,7 +485,8 @@ class TrajectoryGenerator(nn.Module):
         if user_noise is not None:
             z_decoder = user_noise
         else:
-            z_decoder = get_noise(noise_shape, self.noise_type)
+            device = next(self.parameters()).device
+            z_decoder = get_noise(noise_shape, self.noise_type, device=device)
 
         if self.noise_mix_type == 'global':
             _list = []
@@ -526,9 +546,10 @@ class TrajectoryGenerator(nn.Module):
             noise_input, seq_start_end, user_noise=user_noise)
         decoder_h = torch.unsqueeze(decoder_h, 0)
 
+        device = next(self.parameters()).device
         decoder_c = torch.zeros(
-            self.num_layers, batch, self.decoder_h_dim
-        ).cuda()
+            self.num_layers, batch, self.decoder_h_dim, device=device
+        )
 
         state_tuple = (decoder_h, decoder_c)
         last_pos = obs_traj[-1]
@@ -569,6 +590,9 @@ class TrajectoryDiscriminator(nn.Module):
             dropout=dropout
         )
 
+        # 判别器的分类器：输出层维度为 1（二分类：真实/假）
+        # 注意：make_mlp 会自动让最后一层不使用激活函数，输出原始 logits
+        # 这样 BCE loss 可以正常工作，判别器可以输出正负值，避免梯度消失
         real_classifier_dims = [h_dim, mlp_dim, 1]
         self.real_classifier = make_mlp(
             real_classifier_dims,

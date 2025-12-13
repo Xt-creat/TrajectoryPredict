@@ -10,7 +10,7 @@ parser.add_argument('--checkpoint')
 
 
 def main(args):
-	checkpoint = torch.load(args.checkpoint, map_location='cpu')
+	checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
 	for k, v in checkpoint['args'].items():
 		print(k, v)
 
