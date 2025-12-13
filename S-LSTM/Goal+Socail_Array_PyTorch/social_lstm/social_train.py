@@ -52,8 +52,14 @@ def main():
                         help='The dataset index to be left out in training')
     parser.add_argument('--lambda_param', type=float, default=0.0005,
                         help='L2 regularization parameter')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
-                        help='Device to use (cuda or cpu)')
+    # 设备选择：按照 cuda -> cpu -> mps 的顺序查找硬件支持
+    if torch.cuda.is_available():
+        default_device = 'cuda'
+    else:
+        # CPU总是可用，优先使用CPU（MPS需要手动通过 --device mps 指定）
+        default_device = 'cpu'
+    parser.add_argument('--device', type=str, default=default_device,
+                        help='Device to use (cuda, cpu, or mps). Default priority: cuda > cpu > mps')
     args = parser.parse_args()
     train(args)
 

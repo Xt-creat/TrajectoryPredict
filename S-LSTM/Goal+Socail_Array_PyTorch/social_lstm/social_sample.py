@@ -99,8 +99,15 @@ def main():
                         help='要测试的数据集索引（0-4）')
     parser.add_argument('--epoch', type=int, default=1,
                         help='要加载的模型epoch编号')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
-                        help='使用的设备（cuda或cpu）')
+    # 设备选择：优先CUDA，其次MPS（Mac GPU），最后CPU
+    if torch.cuda.is_available():
+        default_device = 'cuda'
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        default_device = 'mps'
+    else:
+        default_device = 'cpu'
+    parser.add_argument('--device', type=str, default=default_device,
+                        help='使用的设备（cuda、mps或cpu）')
     sample_args = parser.parse_args()
 
     # ========== 步骤1: 加载模型配置和权重 ==========
